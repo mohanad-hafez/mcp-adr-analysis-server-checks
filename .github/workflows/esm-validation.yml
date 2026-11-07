@@ -1,0 +1,49 @@
+name: ESM validation
+on:
+  push:
+    branches: [replacement-esm-validation-01]
+    paths: [.github/esm-validation-ready]
+permissions:
+  contents: read
+concurrency:
+  group: esm-validation
+  cancel-in-progress: false
+jobs:
+  validate:
+    if: github.repository == 'mohanad-hafez/mcp-adr-analysis-server-checks'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [baseline, controlled]
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: false
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Check syntax cases
+        run: node .github/scripts/esm_check.test.mjs
+      - name: Validate modules
+        env:
+          ESM_SCENARIO: ${{ matrix.scenario }}
+          EXECUTION_MODE: prompt-only
+        run: node .github/scripts/esm_run.mjs
+      - name: Publish validation outcome
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/esm_publish.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: esm-validation-${{ matrix.scenario }}
+          path: esm-evidence/
+          retention-days: 7
