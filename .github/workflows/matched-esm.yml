@@ -1,0 +1,89 @@
+name: Matched ESM validation
+on:
+  push:
+    branches: [matched-esm-validation-01]
+permissions:
+  contents: read
+jobs:
+  validate:
+    if: github.repository == 'mohanad-hafez/mcp-adr-analysis-server-checks'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      copilot-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [baseline, controlled]
+        arm: [agent, script]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Run the native checks
+        env:
+          ESM_SCENARIO: ${{ matrix.scenario }}
+          EXECUTION_MODE: prompt-only
+        run: node .github/matched/esm_run.mjs
+      - name: Install Copilot
+        if: matrix.arm == 'agent'
+        run: npm install --global @github/copilot@1.0.108
+      - name: Record validation outcome
+        env:
+          ARM: ${{ matrix.arm }}
+          GITHUB_TOKEN: ${{ matrix.arm == 'agent' && github.token || '' }}
+        run: |
+          if [ "$ARM" = agent ]; then
+            node .github/matched/esm-arm.mjs fixture
+            node -e 'const c=process.cwd();console.log(JSON.stringify({mcpServers:{fixture:{type:"local",command:"node",args:[c+"/.github/matched/component_fixture.cjs",c+"/esm-evidence/fixture.json",c+"/esm-evidence/tools.jsonl"],tools:["*"]}}}))' > fixture-mcp.json
+            timeout 160s copilot --disable-builtin-mcps --disable-client-telemetry \
+              --additional-mcp-config=@fixture-mcp.json \
+              --available-tools=fixture-read_input,fixture-publish_result \
+              --allow-tool=fixture --no-ask-user --no-color --silent \
+              --prompt "$(cat .github/matched/esm-prompt.md)" > esm-evidence/agent-output.txt 2> esm-evidence/diagnostics.txt
+          fi
+          node .github/matched/esm-arm.mjs verify
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: esm-${{ matrix.scenario }}-${{ matrix.arm }}
+          path: esm-evidence/
+          retention-days: 14
+  publish:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [baseline, controlled]
+        arm: [agent, script]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: esm-${{ matrix.scenario }}-${{ matrix.arm }}
+          path: esm-evidence
+      - name: Publish the verified outcome
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          test -s esm-evidence/verified.json
+          node .github/matched/esm_publish.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: esm-publication-${{ matrix.scenario }}-${{ matrix.arm }}
+          path: esm-evidence/publication.json
+          retention-days: 14
